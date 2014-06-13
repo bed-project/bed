@@ -1,0 +1,433 @@
+::: Binary Electronic Data specification
+
+This binary data serialization format was created for use in
+RESTful services or with Websockets. Compared to most other
+formats, it comes with three special types: hyperlinks,
+symbols and RFC 3339 dates.
+
+:: Status of this document
+
+Initial draft.
+
+We are looking for any kind of feedback at this point.
+
+:: Overview
+
+The following types are defined:
+
+* Hyperlink
+* Symbol
+* Binary
+* String
+* RFC 3339 date
+* Integer
+* IEEE 754 binary64 (double)
+* IEEE 754 decimal64
+* Map
+* Array
+* List
+
+In addition to these types, it is possible to define up to
+255 additional application-specific types using extensions.
+
+:: Media type
+
+Two standard media types are defined.
+
+While these can perfectly be used, it is highly recommended
+that you create new media types based on these two, and
+provide a more accurate description of the payload. These
+two media types should be thought as generic and as a base
+to build your own media types.
+
+The standard media types do not define any extension, nor
+do they provide means to negotiate extensions. You must
+define your own media type to use extensions.
+
+: `application/x-bed`
+
+This media type defines a BED message which contains one
+top-level value.
+
+Encoding/decoding state is created at the beginning of the
+message and destroyed at the end of the message. It is not
+shared between different messages.
+
+: `application/x-bed-stream`
+
+This media type defines a BED stream which contains zero
+or more BED messages. The order of messages is significant.
+The number of messages is undefined.
+
+Encoding/decoding state is created at the beginning of the
+stream and destroyed when the stream ends. It is shared
+between the different messages that compose the stream.
+
+There is no mechanism defined to identify the end of a
+stream.
+
+:: Types
+
+: Hyperlink
+
+Hyperlinks are a central component of RESTful services. They
+allow linking resources together. Making hyperlinks part of
+the data format ensures that consumers of services can find
+links without any knowledge of the structure or conventions
+of the data returned by the service. In addition, links may
+also come with a link relation, allowing consumer programs
+to identify the relationship between the current resource
+and the resource identified by the link.
+
+RFC 5988 provides detailed explanations about link relations
+and a set of standard relations that can be used. Custom
+link relations can of course also be used. The list of link
+relations to be expected can be provided as part of the
+media type description when using custom media types.
+
+: Symbol
+
+Symbols are a very simple and yet very important optimization
+and serve to greatly reduce the quantity of data being sent.
+
+To understand symbols, it is important to see the differences
+between strings used as keys, only referencing another value,
+with strings that are actual values that will be manipulated,
+formatted, searched... The BED format allows you to identify
+"strings used as keys" as symbols and greatly optimize the
+output when symbols are repeated in the data.
+
+The first time a symbol is found in the data, it is encoded
+in a similar way to strings and will have the same size as
+a string. When a new symbol is found, it is added to the list
+of known symbols and attributed an ID number. The second time
+that symbol is encountered, only that ID number is encoded
+in the data.
+
+This mechanism is even more useful when streaming data to the
+user as the structure of the data will rarely change, meaning
+the symbols will also rarely change, and so almost all
+symbols will be encoded over just 1, 2 or 3 bytes.
+
+The first 32 symbols cost exactly 1 byte, regardless of the
+number of symbols currently defined.
+
+The size of the subsequent symbols cost 2 or 3 bytes depending
+on the number of symbols currently defined. 2 bytes are used
+if there are no more than 8192 symbols defined total, and
+3 bytes otherwise.
+
+The standard media types have two symbols pre-defined: `false`
+and `true`. `false` is the symbol 0 and `true` the symbol 1.
+
+The list of pre-defined symbols can be changed by using a
+custom media type.
+
+Symbols are only valid for the current message, they are reset
+when a new message begins.
+
+If an unknown symbol ID number is received, decoding must
+stop immediately and an error must be thrown.
+
+If a symbol has more than one ID number it is not an error,
+it is merely an unnecessary overhead.
+
+: Binary
+
+The binary type is simply a sequence of bytes of data of
+given size. The size of the data must be known. The data
+itself is left as-is and receives no modification.
+
+If the size of the data can't be known in advance, it is
+recommended to send a list of chunks of binary type that
+the client can then reconstitute.
+
+: String
+
+Strings must be valid UTF-8 text, as defined in RFC 3629.
+
+Validation of the string data should be performed by default,
+although decoders may provide an option to disable it.
+When validation fails, decoding must stop immediately and
+an error must be thrown.
+
+: RFC 3339 date
+
+ISO 8601 dates are an international format that may contain
+date, time and timezone information, making them highly
+suitable when exchanging data between systems.
+
+RFC 3339 defines a practical subset of ISO 8601 dates for
+use by Internet protocols. The subset defined by RFC 3339
+is designed for simplicity and greater interoperability.
+
+This type is provided because dates are very common and
+standardizing on one format ensures not only that encoding
+and decoding of dates will be performed properly, but also
+saves the user from having to do it himself.
+
+Because date, time and timezones are basically a list of
+numbers, we can easily encode and decode them as a binary.
+They are encoded over 7 bytes, optionally followed by up
+to 15 more bytes.
+
+The following table describes the binary encoding:
+
+||	Bits range	Size in bits	Value
+|
+|	0..13		14				Year
+|	14..17		4				Month
+|	18..22		5				Day
+|	23..27		5				Hour
+|	28..33		6				Minutes
+|	34..39		6				Seconds
+|	40..43		4				Fraction control
+|	44			1				Offset sign
+|	45..49		5				Offset hour
+|	50..55		6				Offset minutes
+|	56..		variable		Fractions of a second
+
+Bits are given in the order they appear in the message.
+
+The `Fraction control` value is equal to 0 if there is
+no fractions specified. This is the most common case
+as most services do not require a precision greater
+than a second. This control value indicates the number
+of bytes over which the fractions of a second are
+encoded. Fractions of a second can be encoded over up
+to 15 bytes, which is about 36 digits and is well over
+our current time measurement capabilities.
+
+If `Fraction control` is 1, then the fractions expressed
+may range from 0.0 to 0.255. If it is 2, then it goes
+from 0.0 to 0.65535 and so on. Please see the bignum
+encoding for more details on how fractions are encoded.
+
+Validation of the date should be performed by default,
+although decoders may provide an option to disable it.
+When validation fails, decoding must stop immediately and
+an error must be thrown.
+
+It is important to note that a value of 60 for the seconds
+is not necessarily an error, as it may happen as defined
+by the leap second rules. RFC 3339 provides complete
+information on what constitutes a valid date and how
+to perform this validation.
+
+: Integer
+
+Integers can be encoded in a number of different ways depending
+on their value. The bigger the value the more place it will
+take in the data. Integers have no bound, if they cannot be
+encoded as a 64bit signed integer they will be encoded as a
+bignum.
+
+Bignums are stored in unary form. The digits are stored with
+the least significant bit byte stored first. To calculate
+the integer the following formula can be used:
+`(d0 + d1*256 + d2*256^2 + ... d(Size-1)*256^(Size-1))`
+
+: IEEE 754 binary64
+
+Double precision floating-point numbers can be encoded using
+the IEEE 754 binary64 format. This format uses 64 bits to
+encode the number.
+
+The following table describes the encoding:
+
+||	Bits range	Size in bits	Value
+|
+|	0..0		1				Sign
+|	1..11		11				Exponent
+|	12..63		52				Fraction
+
+Bits are given in the order they appear in the message.
+
+Please consult the IEEE 754-2008 standard for more information
+on how to read this value. Note that special values must be
+encoded and decoded as expected. This includes infinites,
+NaNs and negative zero.
+
+Most programming environments already provide ways to
+encode and decode floating-point numbers in this format.
+Use them. Do not try to perform this encoding or decoding
+by hand if you do not have to.
+
+: IEEE 754 decimal64
+
+Decimal numbers can be encoded using the IEEE 754 decimal64
+format. This format uses 64 bits to encode the number.
+
+The following table describes the encoding:
+
+||	Bits range	Size in bits	Value
+|
+|	0..0		1				Sign
+|	1..13		13				Combination
+|	14..63		50				Significand
+
+Bits are given in the order they appear in the message.
+
+Please consult the IEEE 754-2008 standard for more information
+on how to read this value. Note that special values must be
+encoded and decoded as expected. This includes infinites,
+NaNs and negative zero.
+
+The IEEE 754 decimal64 format being relatively new, few
+programming environments will come with ways to encode or
+decode them. However, it is expected that libraries may
+provide this functionality already.
+
+: Map
+
+Maps are an unordered list of a fixed number of key/value pairs.
+
+Keys can be of any type, although they probably should be
+symbols when possible. Values can of course be of any type.
+
+The order of key/value pairs has no meaning and does not
+need to be preserved.
+
+There must not be any key duplicate in the map. If a duplicate
+is found then decoding must stop immediately and an error must
+be thrown. Decoders can of course provide an option to disable
+this behavior.
+
+: Array
+
+Arrays are an ordered list of a fixed number of values.
+
+Values can be of any type.
+
+The order of the values is important and must be preserved.
+
+: List
+
+Lists are an ordered list of values for which the length
+is not known in advance.
+
+Values can be of any type.
+
+The order of the values is important and must be preserved.
+
+Lists are not defined for the two standard media types.
+If a list is encountered, it is simply skipped.
+
+Lists should only be used when strictly required. Decoders
+should not buffer the whole list in memory before decoding
+it. Similarly it should not buffer the whole decoded
+representation in memory before returning it. 
+
+:: Extensions
+
+A total of 255 extension types can be defined. They can
+take the form of a value or a sequence of bytes of data,
+or "blobs".
+
+No extensions are defined for the two standard media types.
+If an extension value is encountered, it is simply skipped.
+
+Extension values can be encoded as a 8-bit, 16-bit, 32-bit
+or 64-bit values, preceded by a 8-bit type value.
+
+Extension blobs can be encoded as a sequence of bytes
+preceded by a 8-bit type value and a size value encoded
+as a 8-bit, 16-bit, 32-bit or 64-bit unsigned integer.
+
+:: Binary representation
+
+The BED format uses network byte order (big endian).
+
+The following table lists all the binary representations of
+all types and extensions.
+
+||	Representation							Description
+|
+|	00000000 `String`						Link with no rel value
+|	00000001 `String` `Symbol`				Link with rel value
+|	001LLLLL `String data`					Symbol as a string of size `LLLLL`
+|	00000010 `8-bit size` `String data`		Symbol as a string of 8-bit size
+|	010NNNNN								Symbol number `NNNNN`
+|	011NNNNN NNNNNNNN						Symbol number `NNNNN NNNNNNNN`
+|	011NNNNN NNNNNNNN NNNNNNNN				Symbol number `NNNNN NNNNNNNN NNNNNNNN`
+|	00000011 `16-bit size` `Binary data`	Binary of 16-bit size
+|	00000100 `32-bit size` `Binary data`	Binary of 32-bit size
+|	00000101 `64-bit size` `Binary data`	Binary of 64-bit size
+|	00000110 `8-bit size` `String data`		String of 8-bit size
+|	00000111 `16-bit size` `String data`	String of 16-bit size
+|	00001000 `32-bit size` `String data`	String of 32-bit size
+|	00001001 `Binary-encoded date`			RFC 3339 date
+|	10NNNNNN								Signed 6-bit integer `NNNNNN`
+|	00001010 `8-bit integer`				Signed 8-bit integer
+|	00001011 `16-bit integer`				Signed 16-bit integer
+|	00001100 `32-bit integer`				Signed 32-bit integer
+|	00001101 `64-bit integer`				Signed 64-bit integer
+|	00001110 `8-bit size` `Bignum data`		Positive bignum integer
+|	00001111 `8-bit size` `Bignum data`		Negative bignum integer
+|	00010000 `64-bit float`					IEEE 754 binary64
+|	00010001 `64-bit decimal`				IEEE 754 decimal64
+|	110LLLLL `Map data`						Map of size `LLLLL`
+|	00010010 `16-bit size` `Map data`		Map of 16-bit size
+|	00010011 `32-bit size` `Map data`		Map of 32-bit size
+|	111LLLLL `Array data`					Array of size `LLLLL`
+|	00010100 `16-bit size` `Array data`		Array of 16-bit size
+|	00010101 `32-bit size` `Array data`		Array of 32-bit size
+|	00010110								Begin list
+|	00010111								End list
+|	00011000 TTTTTTTT `8-bit value`			8-bit extension value of type `TTTTTTTT`
+|	00011001 TTTTTTTT `16-bit value`		16-bit extension value of type `TTTTTTTT`
+|	00011010 TTTTTTTT `32-bit value`		32-bit extension value of type `TTTTTTTT`
+|	00011011 TTTTTTTT `64-bit value`		64-bit extension value of type `TTTTTTTT`
+|	00011100 TTTTTTTT `8-bit size` `Data`	Data of 8-bit size and of type `TTTTTTTT`
+|	00011101 TTTTTTTT `16-bit size` `Data`	Data of 16-bit size and of type `TTTTTTTT`
+|	00011110 TTTTTTTT `32-bit size` `Data`	Data of 32-bit size and of type `TTTTTTTT`
+|	00011111 TTTTTTTT `64-bit size` `Data`	Data of 64-bit size and of type `TTTTTTTT`
+
+All sizes are encoded as unsigned integers and are in bytes.
+All values encoded as part of the initial byte are unsigned.
+The extension type is encoded as an unsigned integer.
+
+:: Encoding/decoding state
+
+To be able to encode or decode symbols appropriately, state
+must be maintained.
+
+A map of all the symbols and their corresponding ID number
+must be kept in the state.
+
+The state must be created at the beginning of the encoding
+or decoding of the payload. When using the `application/x-bed`
+media type or a derivative, this means before every new message.
+When using the `application/x-bed-stream` or a derivative,
+this means at the beginning of the stream only.
+
+:: Security considerations
+
+The format provides no security mechanism. A number of problems
+may occur during decoding or after decoding a message.
+
+During decoding, extra care must be taken to avoid running out
+of memory. Some of the types allow for very large values. However
+it is not recommended to limit the size of these directly. Two
+solutions are available.
+
+If the decoding library allows stream decoding, then this
+mechanism should be used to decode everything on the fly.
+The decoding library should not only allow streaming the
+different values but also the content of the larger values.
+
+If the decoding library does not allow stream decoding, then
+the application should only try to decode messages that are
+below a certain size. This size may vary depending on the
+environment and the application.
+
+During decoding, the dictionary of symbols may grow to be
+too large. Decoders should provide an option to throw an
+error if the number of symbols exceeds a user-specified value.
+Another recommended option is to allow the user to specify
+the list of expected symbols and throw an error when a new
+symbol is encountered.
+
+After decoding, applications should ensure that the values
+in the message are within acceptable ranges and do not contain
+malicious information. The usual recommendations apply.
